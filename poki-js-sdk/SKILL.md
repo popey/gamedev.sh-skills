@@ -1,19 +1,18 @@
 ---
 name: poki-js-sdk
-description: Use this skill to integrate the Poki JavaScript SDK into a JavaScript game.
+description: Integrates the Poki JavaScript SDK (PokiSDK) into JavaScript browser games. Initializes PokiSDK, configures interstitial and rewarded ad breaks (commercialBreak, rewardedBreak), manages gameplay lifecycle events (gameplayStart, gameplayStop), and sets up loading progress tracking (gameLoadingFinished). Use when the user mentions Poki, PokiSDK, web game monetization, game portal integration, ad breaks in browser games, or distributing an HTML5 game on the Poki platform.
 ---
 
 # Poki JavaScript SDK
 
-## Overview
+## Integration Workflow
 
-Poki is an HTML5 game distribution platform. Its JavaScript SDK (`PokiSDK`) is loaded as a single script and exposes promise-based methods for initialization, ad breaks, loading state, and gameplay lifecycle reporting.
-
-Supported features:
-- Initialization with loading-finished signal
-- Interstitial ads (`commercialBreak`)
-- Rewarded ads (`rewardedBreak`)
-- Gameplay lifecycle (`gameplayStart`, `gameplayStop`)
+1. **Add the SDK script** — embed or dynamically inject the Poki script tag.
+2. **Initialize** — call `PokiSDK.init()` and resolve `gameLoadingFinished` when the game is ready.
+3. **Verify init** — check the browser console for Poki SDK handshake messages; use the Poki Inspector dev tool to confirm the session started.
+4. **Add lifecycle hooks** — call `gameplayStart` / `gameplayStop` around every play session.
+5. **Add ad breaks** — insert `commercialBreak` at natural pause points; add `rewardedBreak` where the player can opt in.
+6. **Test in Poki Inspector** — open `https://inspector.poki.io`, load your game URL, and trigger each ad break to confirm the flow.
 
 ## Installation
 
@@ -23,7 +22,7 @@ Add the official Poki SDK script to your page:
 <script src='https://game-cdn.poki.com/scripts/v2/poki-sdk.js'></script>
 ```
 
-You can also inject it dynamically:
+Or inject it dynamically:
 
 ```js
 function loadPokiSdk() {
@@ -39,8 +38,6 @@ function loadPokiSdk() {
 
 ## Initialization
 
-Wait for `window.PokiSDK` to expose `init`, then call it. After init resolves, mark loading as finished so Poki can dismiss its loader and start the session.
-
 ```js
 loadPokiSdk()
     .then(() => window.PokiSDK.init())
@@ -54,13 +51,13 @@ loadPokiSdk()
     })
 ```
 
-If your loader has discrete phases, you may bracket them with `gameLoadingStart` and `gameLoadingFinished`. Call `gameLoadingFinished` when the game is ready for the player.
+Call `gameLoadingFinished` when the game is ready for the player. If your loader has discrete phases, bracket them with `gameLoadingStart` and `gameLoadingFinished`.
 
 ## Advertisement
 
 ### Interstitial
 
-`commercialBreak` accepts an optional callback fired immediately before the ad opens. The returned promise resolves once the ad flow ends. If the SDK could not deliver an ad, the callback is not invoked, so track this with a flag.
+Use the `isOpened` flag to detect whether an ad was actually delivered — the callback is not invoked when no ad is shown.
 
 ```js
 function showInterstitial() {
@@ -85,7 +82,7 @@ function showInterstitial() {
 
 ### Rewarded
 
-`rewardedBreak` mirrors `commercialBreak` but resolves with a boolean indicating whether the user earned the reward. Grant the reward only when the resolution value is truthy and the open callback fired.
+`rewardedBreak` resolves with a boolean — grant the reward only when both `isOpened` is true and the resolved value is truthy.
 
 ```js
 function showRewarded() {
@@ -113,7 +110,7 @@ function showRewarded() {
 
 ## Lifecycle
 
-Tell Poki when active gameplay starts and stops. Poki uses these signals to time ad breaks and to measure engagement. Call `gameplayStart` when the player gains control (level start, level resume) and `gameplayStop` when control is taken away (level paused, completed, failed, or returning to a menu).
+Call `gameplayStart` when the player gains control (level start, level resume) and `gameplayStop` when control is taken away (level paused, completed, failed, or returning to a menu). Pair every `gameplayStart` with a matching `gameplayStop`.
 
 ```js
 function onLevelStart() {
@@ -125,7 +122,12 @@ function onLevelEnd() {
 }
 ```
 
-Pair every `gameplayStart` with a matching `gameplayStop`.
+## Testing & Verification
+
+- Open **Poki Inspector** at `https://inspector.poki.io` and load your game URL to get a developer session.
+- The browser console will print Poki SDK handshake and event messages — confirm `init` resolves and `gameLoadingFinished` is acknowledged.
+- Trigger `commercialBreak` and `rewardedBreak` via the Inspector UI to simulate ad delivery and verify pause/resume logic fires correctly.
+- Confirm `gameplayStart` and `gameplayStop` events appear in the Inspector timeline at the correct moments.
 
 ---
 

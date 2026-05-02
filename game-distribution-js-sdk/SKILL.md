@@ -1,6 +1,6 @@
 ---
 name: game-distribution-js-sdk
-description: Use this skill to integrate the GameDistribution JavaScript SDK into a JavaScript game.
+description: Integrates the GameDistribution JavaScript SDK (GD SDK) into a JavaScript or HTML5 game, covering SDK initialization, interstitial and rewarded ad display, banner ads, ad callback handling, and game lifecycle events. Use when the user asks about GameDistribution, GD SDK, game ads, HTML5 game monetization, ad integration, or wiring up ads and lifecycle events in a JavaScript or HTML5 game.
 ---
 
 # GameDistribution JavaScript SDK
@@ -15,7 +15,7 @@ GameDistribution exposes a single browser SDK (`window.gdsdk`) configured via a 
 - Display banners (`gdsdk.showAd('display', { containerId })`)
 - Lifecycle pause/resume signals via `SDK_GAME_PAUSE` / `SDK_GAME_START` events
 
-GameDistribution does not expose player/auth, platform storage (use `localStorage`), payments, leaderboards, achievements, social/share, remote config, or server-time APIs — those sections are intentionally omitted below. External-link navigation should also be avoided on this platform.
+No player auth, storage, payments, leaderboards, or social APIs. External-link navigation should also be avoided on this platform.
 
 ## Installation
 
@@ -131,7 +131,7 @@ Key event names emitted by the SDK through `onEvent`:
 - `SDK_GAME_PAUSE` — an ad is starting; pause gameplay and mute audio.
 - `SDK_GAME_START` — an ad has ended (or none was shown); resume gameplay and unmute audio.
 - `SDK_REWARDED_WATCH_COMPLETE` — the user completed a rewarded ad; grant the reward.
-- `SDK_GDPR_TRACKING`, `SDK_GDPR_TARGETING` — GDPR consent signals (no action is usually required in game code).
+- `SDK_GDPR_TRACKING`, `SDK_GDPR_TARGETING` — GDPR consent signals (no action usually required).
 
 ## Advertisement
 
@@ -158,17 +158,11 @@ function showInterstitial() {
 }
 ```
 
-The lifecycle is:
-
-1. `SDK_GAME_PAUSE` fires → state `opened`, pause game.
-2. `SDK_GAME_START` fires → state `closed`, resume game.
-3. If `showAd()` rejects → state `failed`.
-
 GameDistribution does not enforce a minimum delay between interstitials at the SDK level — call `showAd()` whenever your game logic requires.
 
 ### Rewarded
 
-Rewarded ads must be preloaded before they can be shown. After every rewarded ad completes, preload the next one.
+Rewarded ads must be preloaded before they can be shown. After every rewarded ad completes (`SDK_GAME_START`), preload the next one.
 
 ```js
 function preloadRewarded() {
@@ -192,13 +186,6 @@ function showRewarded() {
         })
 }
 ```
-
-The lifecycle is:
-
-1. `SDK_GAME_PAUSE` fires → state `opened`, pause game.
-2. `SDK_REWARDED_WATCH_COMPLETE` fires → state `rewarded`, grant the reward.
-3. `SDK_GAME_START` fires → state `closed`, resume game, then `preloadAd('rewarded')` for the next round.
-4. If `showAd('rewarded')` rejects → state `failed`.
 
 ### Banner
 
@@ -259,7 +246,7 @@ function hideBanner() {
 
 GameDistribution drives game pause/resume through the same `SDK_GAME_PAUSE` and `SDK_GAME_START` events that wrap every ad. There is no separate visibility or audio API — you derive both from these events:
 
-- On `SDK_GAME_PAUSE`: pause gameplay, mute or duck audio. The SDK will not start an ad if the game is not paused.
+- On `SDK_GAME_PAUSE`: pause gameplay, mute or duck audio.
 - On `SDK_GAME_START`: resume gameplay, restore audio. This event also fires once after `SDK_READY` if no ad was served.
 
 Combine this with the standard browser visibility events for tab-switch handling, since GameDistribution does not surface those itself:
@@ -285,25 +272,3 @@ window.addEventListener('focus', () => {
 ## Storage
 
 GameDistribution does not provide a platform storage API. Use `window.localStorage` directly for persisting player progress.
-
-## Unsupported features
-
-The following are NOT provided by the GameDistribution native SDK and are intentionally omitted:
-
-- Player authentication / profile (no `playerId`, `playerName`, `playerPhotos`)
-- In-app purchases / payments
-- Leaderboards
-- Achievements
-- Social: invite friends, join community, share, create post, add-to-home-screen, add-to-favorites, rate
-- Remote config
-- Server time (use a public NTP-style endpoint such as `worldtimeapi.org` if needed)
-- External link navigation (treat external links as not allowed on this platform)
-
-## GameDistribution-specific notes
-
-- `window.GD_OPTIONS` MUST be assigned before the SDK script is appended to the DOM, otherwise `gameId` and `onEvent` will be missed.
-- The `onEvent` callback receives a single object with at minimum a `name` field — switch on `event.name`.
-- `SDK_GAME_PAUSE` / `SDK_GAME_START` are reused across both interstitial and rewarded ads; track which ad type you requested last (e.g. a `currentAdvertisementIsRewarded` flag) to route state correctly.
-- `showAd(...)` returns a Promise that rejects when the ad cannot be filled — always attach a `.catch()` to fall back gracefully.
-- After every rewarded ad completes, call `gdsdk.preloadAd('rewarded')` again so the next request resolves quickly.
-- The banner container id passed to `showAd('display', ...)` must match an element already attached to the DOM.

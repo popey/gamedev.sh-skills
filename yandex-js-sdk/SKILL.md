@@ -1,65 +1,72 @@
 ---
 name: yandex-js-sdk
-description: Use this skill to integrate the Yandex Games JavaScript SDK into a JavaScript game.
+description: Integrates the Yandex Games JavaScript SDK (YaGames) into JavaScript games. Initializes the SDK and lifecycle hooks, manages player authentication and authorization, handles per-player cloud storage, controls ad placements (interstitial, rewarded video, sticky banner), implements in-app purchases and leaderboards, retrieves remote config flags, and supports social features such as review prompts and home-screen shortcuts. Use when the user mentions Yandex Games, YaGames, yandex sdk, deploying a game to the Yandex.Games platform, or integrating features like ads, leaderboards, in-app purchases, or player authentication into a Yandex-hosted JavaScript game.
 ---
 
 # Yandex Games JavaScript SDK
 
 ## Overview
 
-Yandex Games loads games inside a frame on `yandex.<tld>/games`. The host injects the `YaGames` global once the SDK script is loaded; calling `YaGames.init()` returns a `ysdk` instance that exposes every supported feature:
+Yandex Games loads games inside a frame on `yandex.<tld>/games`. The host injects the `YaGames` global once the SDK script is loaded. Key capability areas:
 
-- Initialization, environment (language / TLD), device info
-- `LoadingAPI.ready()` and `GameplayAPI.start/stop` lifecycle hooks
-- Player profile and authorization (`getPlayer`, `auth.openAuthDialog`)
-- Per-player key/value storage (`player.getData` / `player.setData`)
-- Fullscreen interstitial, rewarded video and sticky banner ads (`adv.*`)
-- In-app purchases (`getPayments` → `purchase`, `getPurchases`, `consumePurchase`, `getCatalog`)
-- Leaderboards (`leaderboards.setScore`, `leaderboards.getEntries`)
-- Remote config flags (`getFlags`)
-- Server time (`serverTime()`)
-- Review prompt (`feedback.canReview` / `feedback.requestReview`)
-- Add-to-home-screen shortcut (`shortcut.canShowPrompt` / `shortcut.showPrompt`)
-- Clipboard write (`clipboard.writeText`)
-- Catalog / lookup of other Yandex Games (`features.GamesAPI`)
-- Pause / resume notifications via the `game_api_pause` and `game_api_resume` events
+- **Lifecycle & environment**: init, `LoadingAPI.ready()`, `GameplayAPI.start/stop`, pause/resume events, device info, language/TLD
+- **Player & storage**: authorization, profile data, per-player key/value cloud storage
+- **Monetization**: fullscreen interstitial, rewarded video, sticky banner ads, in-app purchases
+- **Engagement**: leaderboards, remote config flags, review prompt, add-to-home-screen shortcut, server time, clipboard write, cross-promotion via `GamesAPI`
 
-The SDK does NOT expose social share, invite-friends, community-join, add-to-favorites, achievements or stat counters in the surface used here, so those are intentionally omitted.
+The SDK does NOT expose social share, invite-friends, community-join, add-to-favorites, achievements, or stat counters.
 
 ## Installation
-
-Load the official SDK script before bootstrapping the game.
 
 ```html
 <script src='https://yandex.ru/games/sdk/v2'></script>
 ```
 
-The script registers the `YaGames` global asynchronously. If you load it dynamically, poll until `window.YaGames && window.YaGames.init` is defined before calling `init()`.
+If loaded dynamically, poll until `window.YaGames && window.YaGames.init` is defined before calling `init()`.
 
-## Initialization
+## Quick Start / Integration Workflow
 
-`YaGames.init()` returns a promise that resolves with the `ysdk` object. Once the loading screen is gone, call `features.LoadingAPI.ready()` so Yandex hides its splash.
+Follow this sequence when wiring up the SDK for the first time. Verify each step before proceeding to the next.
 
 ```javascript
-async function initYandex() {
+async function bootstrap() {
+    // 1. Ensure SDK script has loaded
+    if (!window.YaGames?.init) {
+        throw new Error('YaGames SDK not available — check that the script tag loaded')
+    }
+
+    // 2. Initialize — all subsequent SDK calls require ysdk
     const ysdk = await window.YaGames.init()
 
-    // Subscribe to host pause / resume early so events are not missed
-    ysdk.on('game_api_pause', () => {
-        // Mute audio and pause gameplay
-    })
-    ysdk.on('game_api_resume', () => {
-        // Unmute audio and resume gameplay
-    })
+    // 3. Bind host-driven pause / resume before anything else
+    ysdk.on('game_api_pause', () => { /* mute audio, pause gameplay */ })
+    ysdk.on('game_api_resume', () => { /* unmute, resume */ })
 
-    // Tell Yandex the loading screen is gone
+    // 4. Signal that the loading screen is gone
     ysdk.features.LoadingAPI?.ready()
 
-    return ysdk
+    // 5. Read environment (language, device type)
+    const env = readEnvironment(ysdk)
+
+    // 6. Fetch player — fall back to guest mode if not authorized
+    let player = null
+    let storageCache = {}
+    try {
+        const info = await getPlayer(ysdk)
+        player = info.raw
+        if (info.isAuthorized) {
+            storageCache = await loadStorage(player)
+        }
+    } catch (err) {
+        console.warn('Player init failed, continuing as guest:', err)
+    }
+
+    // 7. Start gameplay tracking
+    onGameplayStarted(ysdk)
+
+    return { ysdk, player, storageCache, env }
 }
 ```
-
-Useful values from `ysdk.environment` and `ysdk.deviceInfo`:
 
 ```javascript
 function readEnvironment(ysdk) {
@@ -72,8 +79,6 @@ function readEnvironment(ysdk) {
 ```
 
 ## Player / Authorization
-
-`getPlayer({ signed })` returns a player object whose `isAuthorized()` flag tells you whether the user has a Yandex account session. If not, call `auth.openAuthDialog()` to prompt sign-in and re-fetch the player. Pass `signed: true` to receive a server-verifiable signature on the player payload.
 
 ```javascript
 async function getPlayer(ysdk, { useSignedData = false } = {}) {
@@ -105,7 +110,7 @@ async function authorizePlayer(ysdk, options) {
 
 ## Storage
 
-Yandex stores per-player JSON data via `player.getData` / `player.setData`. There is no per-key API: every call writes the full document. Cache the latest snapshot client-side and merge before each save. Storage is only available for authorized players; fall back to `localStorage` for guests.
+Every call writes the full document — there is no per-key API. Cache the latest snapshot client-side and merge before each save. Fall back to `localStorage` for guests.
 
 ```javascript
 async function loadStorage(player) {
@@ -150,6 +155,8 @@ function getCached(cache, key) {
 
 ### Fullscreen interstitial
 
+`onClose(wasShown)` fires on both normal close and SDK-skipped ads. Treat `wasShown === false` as a failure.
+
 ```javascript
 function showInterstitial(ysdk, handlers = {}) {
     ysdk.adv.showFullscreenAdv({
@@ -162,9 +169,9 @@ function showInterstitial(ysdk, handlers = {}) {
 }
 ```
 
-`onClose(wasShown)` fires both for normal close and when the SDK skips the ad. Treat `wasShown === false` as a failure.
-
 ### Rewarded video
+
+Grant the reward inside `onRewarded`. `onClose` fires after the ad UI is dismissed.
 
 ```javascript
 function showRewarded(ysdk, handlers = {}) {
@@ -179,11 +186,7 @@ function showRewarded(ysdk, handlers = {}) {
 }
 ```
 
-Grant the reward inside `onRewarded`. `onClose` fires after the ad UI is dismissed.
-
 ### Sticky banner
-
-The banner is placed by Yandex; the game just toggles it. Inspect the result of every call to know whether the banner is actually on screen.
 
 ```javascript
 async function getBannerStatus(ysdk) {
@@ -201,11 +204,9 @@ async function hideBanner(ysdk) {
 }
 ```
 
-Yandex serves ads regardless of adblock state, so an explicit adblock check is unnecessary.
-
 ## Payments / IAP
 
-Obtain the payments object once after init. Pass `signed: true` if your backend needs to validate purchase signatures.
+Obtain the payments object once after init. Pass `signed: true` for backend signature validation.
 
 ```javascript
 async function initPayments(ysdk, { signed = true } = {}) {
@@ -236,7 +237,9 @@ async function getCatalog(payments) {
 ```javascript
 async function purchase(payments, productId, payload) {
     const result = await payments.purchase({ id: productId, developerPayload: payload })
-    // result.purchaseData = { productID, purchaseToken, developerPayload, signature, ... }
+    if (!result?.purchaseData?.purchaseToken) {
+        throw new Error(`Purchase succeeded but returned no purchaseToken for product ${productId}`)
+    }
     return { id: productId, ...result.purchaseData }
 }
 ```
@@ -252,17 +255,20 @@ async function getPurchases(payments) {
 
 ### Consume
 
-After the game has granted the in-game item, consume the purchase token so the player can buy the same SKU again.
+Verify the item was granted before consuming. A failed consume leaves the token intact for retry.
 
 ```javascript
 async function consumePurchase(payments, purchaseToken) {
+    if (!purchaseToken) {
+        throw new Error('consumePurchase: purchaseToken is required')
+    }
     await payments.consumePurchase(purchaseToken)
 }
 ```
 
 ## Leaderboards
 
-Leaderboards are configured server-side in the developer console; the game references each board by its string id. Setting a score requires an authorized player.
+Boards are configured in the developer console and referenced by string id. Setting a score requires an authorized player.
 
 ```javascript
 async function setLeaderboardScore(ysdk, leaderboardId, score) {
@@ -296,7 +302,7 @@ async function getLeaderboardEntries(ysdk, leaderboardId, { isPlayerAuthorized =
 
 ## Remote config
 
-`ysdk.getFlags(options)` returns a flat `{ key: stringValue }` map. Pass `clientFeatures` to deliver client-conditioned variants.
+`ysdk.getFlags(options)` returns a flat `{ key: stringValue }` map.
 
 ```javascript
 async function getRemoteConfig(ysdk, options = {}) {
@@ -317,8 +323,6 @@ function getServerTime(ysdk) {
 ## Social
 
 ### Review prompt
-
-`feedback.canReview()` returns `{ value: boolean, reason?: string }`. If `value` is true, call `requestReview()` and inspect `feedbackSent` to know whether the player actually submitted feedback.
 
 ```javascript
 async function requestReview(ysdk) {
@@ -355,39 +359,30 @@ async function clipboardWrite(ysdk, text) {
 
 ## Gameplay lifecycle, pause and audio
 
-Yandex requires the game to bracket every active gameplay session with `GameplayAPI.start()` / `GameplayAPI.stop()`. This drives ad pacing and analytics.
+Bracket every active gameplay session with `GameplayAPI.start()` / `GameplayAPI.stop()` to drive ad pacing and analytics.
 
 ```javascript
 function onGameplayStarted(ysdk) {
-    // level_started, level_resumed, gameplay_started
     ysdk.features.GameplayAPI?.start()
 }
 
 function onGameplayStopped(ysdk) {
-    // level_paused, level_completed, level_failed, gameplay_stopped
     ysdk.features.GameplayAPI?.stop()
 }
 ```
 
-Listen for host-driven pause / resume:
-
 ```javascript
 function bindPauseHandlers(ysdk, { onPause, onResume }) {
-    ysdk.on('game_api_pause', () => {
-        // Yandex covered the game (e.g. another tab, system overlay) — mute audio and pause
-        onPause?.()
-    })
-    ysdk.on('game_api_resume', () => {
-        onResume?.()
-    })
+    ysdk.on('game_api_pause', () => onPause?.())
+    ysdk.on('game_api_resume', () => onResume?.())
 }
 ```
 
-Visibility / focus changes that are not announced by Yandex (player switches browser tabs) should still be handled with the standard `document.visibilitychange`, `window.blur` and `window.focus` events on top of these SDK callbacks.
+Visibility/focus changes not announced by Yandex should still be handled with `document.visibilitychange`, `window.blur`, and `window.focus` alongside these SDK callbacks.
 
 ## Catalog of other Yandex Games (optional)
 
-`features.GamesAPI` lets the game list or look up other Yandex Games (used for cross-promotion screens). It is gated on availability per game; check for the namespace before calling it.
+`features.GamesAPI` is gated on availability per game; check for the namespace before calling it.
 
 ```javascript
 async function getAllGames(ysdk) {

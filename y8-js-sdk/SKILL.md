@@ -1,28 +1,27 @@
 ---
 name: y8-js-sdk
-description: Use this skill to integrate the Y8 JavaScript SDK into a JavaScript game.
+description: Integrates the Y8 JavaScript SDK into JavaScript and HTML5 games. Covers SDK loading and initialization handshake, player authentication via Y8 login, cloud-backed user data storage, interstitial and rewarded ads through Google AdSense, native achievement unlocking and listing, and in-game leaderboard score submission and retrieval. Use when the user mentions Y8 SDK, Y8 API, Y8 integration, Y8 leaderboard, Y8 achievements, Y8 login, or adding Y8 features to a JavaScript or HTML5 game.
 ---
 
 # Y8 JavaScript SDK
 
-Y8 hosts HTML5 games and exposes a global `window.ID` after its loader script finishes. The Y8 SDK wraps the player session, achievement / leaderboard `GameAPI`, and a generic `api()` HTTP helper. Advertising is delegated to Google AdSense via `adsbygoogle.push` (the SDK does not ship an ads module of its own).
+## Integration Workflow
 
-## Overview
+Follow these steps in order. Each step includes a validation checkpoint before proceeding.
 
-The supported surface area is:
-
-- Initialization handshake (`ID.init({ appId })`) and `id.init` event subscription
-- Player authorization (`ID.getLoginStatus`, `ID.login`)
-- Platform-internal cloud storage built on `ID.api('user_data/...', 'POST', ...)`
-- Interstitial and rewarded ads driven by Google AdSense `adsbygoogle.push`
-- Native achievements: unlock (`ID.GameAPI.Achievements.save`), list (`listCustom`), and native popup (`list`)
-- In-game leaderboards: submit (`ID.GameAPI.Leaderboards.save`) and fetch entries (`listCustom`)
-
-Banners, in-app purchases, social actions (share / invite / community / rate / add-to-home-screen / add-to-favorites), remote config and a server-time API are not exposed by Y8 and are intentionally omitted here.
+1. **Load the SDK** — inject the script and poll for `window.ID`.
+   - ✓ Verify: `typeof window.ID !== 'undefined'`
+2. **Subscribe to `id.init`** before calling `ID.init({ appId })`.
+   - ✓ Verify: the `id.init` callback fires; if it never fires, check the `appId`.
+3. **Fetch login status** inside `id.init` to populate the player profile.
+   - ✓ Verify: `data.status === 'ok'` means the player is signed in.
+4. **Load AdSense** in parallel with login status inside `id.init`.
+   - ✓ Verify: `adsbygoogle` script loads and `onReady` fires.
+5. **Gate storage, achievements, and leaderboards** on `profile.isAuthorized === true`.
+   - ✓ Verify before each API call: player is authorized or prompt login first.
+6. **Invalidate `cachedUserData`** (set to `null`) after a successful `ID.login` call so the new session reads its own cloud state.
 
 ## Installation
-
-The Y8 SDK is loaded from a single script URL. Inject it dynamically and wait for `window.ID` to appear before using it.
 
 ```javascript
 const SDK_URL = 'https://cdn.y8.com/api/sdk.js'
@@ -59,7 +58,7 @@ function waitFor(globalName, timeoutMs = 10000) {
 
 ## Initialization
 
-Y8's bootstrap is event-driven: subscribe to `id.init` first, then call `ID.init({ appId })`. The `appId` (a.k.a. Game API Key) is issued by Y8 when you register the game. Once `id.init` fires, fetch the current login status to populate the player profile and load the Google AdSense ad-break runtime in parallel.
+Subscribe to `id.init` first, then call `ID.init({ appId })`. The `appId` (a.k.a. Game API Key) is issued by Y8 when you register the game. Once `id.init` fires, fetch login status and load AdSense in parallel.
 
 ```javascript
 async function initY8({ gameId, adSenseId, channelId }) {
@@ -68,11 +67,11 @@ async function initY8({ gameId, adSenseId, channelId }) {
     }
 
     await loadScript(SDK_URL)
-    const sdk = await waitFor('ID')
+    const sdk = await waitFor('ID') // ✓ checkpoint: window.ID exists
 
     return new Promise((resolve, reject) => {
         sdk.Event.subscribe('id.init', () => {
-            // Bootstrap Google AdSense alongside the Y8 session
+            // ✓ checkpoint: id.init fired — SDK is ready
             loadAdsByGoogle({ adSenseId, channelId })
                 .then((showAd) => {
                     sdk.getLoginStatus((data) => {
@@ -90,11 +89,9 @@ async function initY8({ gameId, adSenseId, channelId }) {
 }
 ```
 
-`Y8` recommends a 60-second initial delay before showing the first interstitial — track this in your game logic if you gate ads on session age.
-
 ## Player / Authorization
 
-`ID.getLoginStatus(callback)` returns the current session without prompting. `ID.login(callback)` opens Y8's login dialog. Both deliver the same payload shape — a `status` of `'ok'` means the player is signed in and `authResponse.details` holds the profile.
+`ID.getLoginStatus(callback)` returns the current session without prompting. `ID.login(callback)` opens Y8's login dialog. Both deliver the same payload shape.
 
 ```javascript
 function readPlayerInfo(data) {
@@ -154,7 +151,9 @@ function authorizePlayer(sdk) {
 
 ## Storage
 
-Y8 provides cloud-backed user data through the generic `ID.api()` helper. A practical pattern is to store all game data as a single JSON blob under one server key (`'userData'`) — read it once, mutate the object locally, and write it back. Storage is only available while the player is authorized.
+Cloud-backed user data is accessed through `ID.api()`. Store all game data as a single JSON blob under one key — read once, mutate locally, write back.
+
+> **After login:** set `cachedUserData = null` so the newly authorized player reads their own cloud state.
 
 ```javascript
 const USERDATA_KEY = 'userData'
@@ -224,11 +223,9 @@ function deleteStorageValue(sdk, key) {
 }
 ```
 
-Invalidate `cachedUserData` (set it back to `null`) after a successful `ID.login` call so a freshly authorized player sees their own cloud state instead of the previous session's data.
-
 ## Advertisement
 
-Y8 monetizes through Google AdSense for Games. The `adsbygoogle.push` runtime exposes an `adBreak` API; you call it with a `type` (`'start'` for interstitials, `'reward'` for rewarded) and a set of lifecycle callbacks. Use `data-ad-channel` if Y8 gave you a channel id, otherwise fall back to your own AdSense client id.
+`adsbygoogle.push` exposes an `adBreak` API with `type: 'start'` for interstitials and `type: 'reward'` for rewarded ads. Use `data-ad-channel` if Y8 provided a channel id, otherwise fall back to your AdSense client id.
 
 ```javascript
 const ADS_ID = '6129580795478709'
@@ -240,7 +237,6 @@ function loadAdsByGoogle({ adSenseId, channelId }) {
         script.setAttribute('crossorigin', 'anonymous')
         script.setAttribute('data-ad-frequency-hint', '180s')
 
-        // Y8 channel id takes precedence; falls back to host id
         script.setAttribute('data-ad-client', channelId ? `ca-pub-${ADS_ID}` : adSenseId)
         if (channelId) {
             script.setAttribute('data-ad-channel', channelId)
@@ -293,7 +289,7 @@ function showInterstitial(showAd, { onOpened, onClosed, onFailed } = {}) {
 
 ### Rewarded
 
-Rewarded breaks are gated by `beforeReward(showAdFn)` — call `showAdFn(0)` to display the ad. `adViewed` fires when the player completed the ad and earned the reward; `adDismissed` means they bailed out early.
+`beforeReward(showAdFn)` gates the ad — call `showAdFn(0)` to display it. `adViewed` fires when the player completes the ad; `adDismissed` means they exited early.
 
 ```javascript
 function showRewarded(showAd, { onOpened, onRewarded, onClosed, onFailed } = {}) {
@@ -331,7 +327,7 @@ function showRewarded(showAd, { onOpened, onRewarded, onClosed, onFailed } = {})
 
 ## Achievements
 
-Y8 native achievements live under `ID.GameAPI.Achievements`. The player must be authorized for `save` to succeed; both `achievement` (display name) and `achievementkey` (stable id) are required by the SDK.
+Y8 native achievements live under `ID.GameAPI.Achievements`. Both `achievement` (display name) and `achievementkey` (stable id) are required.
 
 ### Unlock
 
@@ -378,7 +374,7 @@ function getAchievementsList(sdk, options = {}) {
 
 ### Native popup
 
-`ID.GameAPI.Achievements.list(options)` opens Y8's built-in achievements UI. It returns nothing — treat the call itself as the action.
+`ID.GameAPI.Achievements.list(options)` opens Y8's built-in achievements UI and returns nothing.
 
 ```javascript
 function showAchievementsPopup(sdk, options = {}) {
@@ -388,7 +384,7 @@ function showAchievementsPopup(sdk, options = {}) {
 
 ## Leaderboards
 
-Y8 leaderboards are in-game (the host site does not render a popup). Each board is identified by a string `table` id you configure in the Y8 dashboard. The player must be authorized to submit or read entries.
+Each board is identified by a string `table` id configured in the Y8 dashboard.
 
 ### Submit a score
 
@@ -412,6 +408,8 @@ function submitScore(sdk, tableId, score) {
 ```
 
 ### Fetch entries
+
+Valid `mode` values: `'alltime'` (default), `'daily'`, `'weekly'`, `'monthly'`.
 
 ```javascript
 function getLeaderboardEntries(sdk, tableId) {
@@ -439,5 +437,3 @@ function getLeaderboardEntries(sdk, tableId) {
     })
 }
 ```
-
-Other valid `mode` values include `'daily'`, `'weekly'`, and `'monthly'` if you need scoped boards — `'alltime'` is the default used in the example above.

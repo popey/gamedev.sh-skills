@@ -1,25 +1,22 @@
 ---
 name: crazy-games-js-sdk
-description: Use this skill to integrate the CrazyGames JavaScript SDK into a JavaScript game.
+description: Integrates the CrazyGames JavaScript SDK (v3) into a browser or HTML5 game. Handles SDK initialization, user authentication and profile retrieval, persistent key/value storage, interstitial and rewarded ad breaks, adblock detection, responsive banner ads, gameplay lifecycle hooks (loadingStart/Stop, gameplayStart/Stop, happytime), and optional Xsolla Pay Station in-app purchases with analytics order tracking. Use when the user mentions CrazyGames, wants to publish or integrate a game on CrazyGames, or needs to add SDK features like ads, user accounts, game events, storage, or in-game purchases to a browser/HTML5/JavaScript game.
 ---
 
 # CrazyGames JavaScript SDK
 
-## Overview
+## Integration Checklist
 
-CrazyGames exposes its SDK as a global object `window.CrazyGames.SDK` after a single script tag is loaded. The SDK covers:
+Follow this order when integrating the SDK into a game:
 
-- Initialization and language/device detection
-- User account (display name, avatar, JWT)
-- Persistent key/value storage (`SDK.data`)
-- Interstitial (`midgame`) and rewarded ads with adblock detection
-- Responsive banner ads (single and multi-slot)
-- Gameplay lifecycle hooks (`gameplayStart` / `gameplayStop`, `loadingStart` / `loadingStop`, `happytime`)
-- Analytics order tracking (used together with Xsolla payments)
+1. **Load SDK** — add the CDN `<script>` tag before your game bootstraps
+2. **Init** — call `SDK.init()` and await resolution before touching any SDK module
+3. **Lifecycle hooks** — wire `loadingStart/Stop` and `gameplayStart/Stop` throughout the game loop
+4. **Ads** — add interstitial and/or rewarded ad calls at natural break points
+5. **Optional: Auth & Storage** — add sign-in and persistent key/value storage if needed
+6. **Optional: Payments** — Xsolla Pay Station integration (separate concern; skip if not applicable)
 
-In-app purchases are NOT a native CrazyGames feature; they are implemented through the Xsolla Pay Station widget on top of `SDK.user.getXsollaUserToken()`. Document them only if your project has an Xsolla project ID provisioned.
-
-CrazyGames does not expose leaderboards, achievements, remote config, server time or social-share APIs in the SDK surface used here, so those sections are intentionally omitted.
+---
 
 ## Installation
 
@@ -29,21 +26,26 @@ Load the SDK from the official CDN before bootstrapping the game.
 <script src='https://sdk.crazygames.com/crazygames-sdk-v3.js'></script>
 ```
 
-If you load it dynamically, wait until `window.CrazyGames.SDK.init` is defined before calling it.
+If you load it dynamically, wait until `window.CrazyGames.SDK.init` is defined before calling it. If the script is blocked (e.g. by CSP), the `window.CrazyGames` global will be undefined — add `sdk.crazygames.com` to your `script-src` directive.
 
 ## Initialization
 
-Call `SDK.init()` once. It resolves when the SDK is ready to be used. Only after that is `SDK.user`, `SDK.data`, `SDK.ad`, `SDK.banner`, `SDK.game` and `SDK.analytics` safe to call.
+Call `SDK.init()` once. It resolves when the SDK is ready. Only after resolution are `SDK.user`, `SDK.data`, `SDK.ad`, `SDK.banner`, `SDK.game`, and `SDK.analytics` safe to use.
 
 ```javascript
 async function initCrazyGames() {
+    if (!window.CrazyGames?.SDK) {
+        throw new Error('CrazyGames SDK script not loaded')
+    }
     const sdk = window.CrazyGames.SDK
-    await sdk.init()
+    try {
+        await sdk.init()
+    } catch (err) {
+        throw new Error(`CrazyGames SDK init failed: ${err.message}`)
+    }
 
-    // SDK.user is available immediately after init
     const isUserAccountAvailable = sdk.user.isUserAccountAvailable
 
-    // System info (only meaningful when an account is available)
     if (isUserAccountAvailable) {
         const language = sdk.user.systemInfo.countryCode.toLowerCase()
         const deviceType = sdk.user.systemInfo.device.type.toLowerCase() // 'desktop' | 'mobile' | 'tablet'
@@ -54,9 +56,20 @@ async function initCrazyGames() {
 }
 ```
 
+## Verification
+
+After calling `initCrazyGames()`, confirm the SDK is working before proceeding:
+
+- **Console check** — no `CrazyGames SDK init failed` error should appear; `sdk.user.isUserAccountAvailable` should return a boolean without throwing.
+- **Lifecycle hooks** — open the CrazyGames sandbox URL for your game and verify that `loadingStart` / `loadingStop` / `gameplayStart` / `gameplayStop` calls appear in the CrazyGames developer dashboard event log.
+- **Ad callbacks** — use the CrazyGames sandbox environment (append `?crazygames_sandbox=1` to the URL) to trigger test ads and confirm `adStarted` and `adFinished` fire correctly.
+- **Adblock** — call `sdk.ad.hasAdblock()` while running with an ad blocker enabled and confirm it resolves `true`.
+
+---
+
 ## Player / Authorization
 
-The SDK distinguishes between "user account available" (the player has a CrazyGames account on this domain) and "currently signed in". Use `showAuthPrompt()` to ask the player to sign in, then `getUser()` to read profile data and optionally `getUserToken()` to obtain a signed JWT for your backend.
+Use `showAuthPrompt()` to ask the player to sign in, then `getUser()` to read profile data, and optionally `getUserToken()` for a signed JWT to verify on your backend.
 
 ```javascript
 async function authorizePlayer(sdk, { useUserToken = false } = {}) {
@@ -144,7 +157,7 @@ function showInterstitial(sdk) {
 
 ### Rewarded ad
 
-Same API, just pass `'rewarded'` as the type. `adFinished` means the user watched the ad to completion and should receive the reward.
+Same API, pass `'rewarded'` as the type. `adFinished` means the user watched to completion and should receive the reward.
 
 ```javascript
 function showRewarded(sdk, onReward) {
@@ -172,7 +185,7 @@ async function isAdblockActive(sdk) {
 
 ### Responsive banners
 
-Banners are bound to existing DOM containers by id. CrazyGames renders into them and picks an appropriate size on its own.
+Banners are bound to existing DOM containers by id. CrazyGames renders into them and picks an appropriate size.
 
 ```javascript
 async function showBanner(sdk, containerId) {
@@ -194,240 +207,48 @@ function hideBanners(sdk) {
 }
 ```
 
+## Lifecycle / gameplay events
+
+CrazyGames REQUIRES the host game to call gameplay and loading hooks at the right moments — they drive ad pacing, in-game UI dimming, and analytics.
+
+Map generic game lifecycle events to SDK calls as follows:
+
+| Game event | SDK call |
+|---|---|
+| `level_started`, `level_resumed`, `gameplay_started` | `sdk.game.gameplayStart()` |
+| `level_paused`, `level_completed`, `level_failed`, `gameplay_stopped` | `sdk.game.gameplayStop()` |
+| `in_game_loading_started` | `sdk.game.loadingStart()` |
+| `in_game_loading_stopped` | `sdk.game.loadingStop()` |
+| `player_got_achievement` | `sdk.game.happytime()` |
+
+There are no separate `audio` / `pause` / `visibility` callbacks on the CrazyGames SDK — drive your audio and pause state from the ad callbacks (`adStarted` / `adFinished`) and the standard `document.visibilitychange` event.
+
+---
+
 ## Payments (optional, via Xsolla Pay Station)
 
-CrazyGames itself does not sell IAPs. The integration uses CrazyGames-issued Xsolla user tokens with the Xsolla Pay Station widget and Xsolla Store API. Skip this section entirely if you do not have an Xsolla project ID.
+> **Skip this section entirely if you do not have an Xsolla project ID.** CrazyGames itself does not sell IAPs; this integration uses CrazyGames-issued Xsolla user tokens with the Xsolla Pay Station widget and Xsolla Store API.
 
-Endpoints and assets used:
+Key constants:
 
 ```javascript
 const XSOLLA_PAYSTATION_EMBED_URL = 'https://cdn.xsolla.net/payments-bucket-prod/embed/1.5.0/widget.min.js'
 const XSOLLA_SDK_URL = 'https://store.xsolla.com/api/v2/project'
 ```
 
-Helpers:
+Obtain the Xsolla user token via `sdk.user.getXsollaUserToken()`. Use it as a `Bearer` token for all Xsolla Store API requests (catalog, purchase, inventory, consume).
 
-```javascript
-async function ensurePaystationLoaded() {
-    if (window.XPayStationWidget) {
-        return
-    }
-    await new Promise((resolve, reject) => {
-        const script = document.createElement('script')
-        script.src = XSOLLA_PAYSTATION_EMBED_URL
-        script.onload = resolve
-        script.onerror = reject
-        document.head.appendChild(script)
-    })
-}
+**Catalog** — `GET /{projectId}/items?limit=50`
 
-async function getXsollaToken(sdk) {
-    return sdk.user.getXsollaUserToken()
-}
+**Purchase flow**:
+1. `POST /{projectId}/payment/item/{sku}` → returns `{ token, order_id }`
+2. Load `XSOLLA_PAYSTATION_EMBED_URL` dynamically if not already present
+3. `XPayStationWidget.init({ access_token: token, sandbox: isSandbox })` then `.open()`
+4. Listen for `XPayStationWidget.eventTypes.STATUS`; when `paymentInfo.status` matches `/done|charged|success/i`, fetch `GET /{projectId}/order/{orderId}` and call `sdk.analytics.trackOrder('xsolla', order)` to record the purchase
+5. Listen for the `'close'` event to handle cancellation
 
-async function getXsollaOrder(projectId, orderId, token) {
-    const res = await fetch(
-        `${XSOLLA_SDK_URL}/${projectId}/order/${orderId}`,
-        { headers: { Authorization: `Bearer ${token}` } },
-    )
-    if (!res.ok) {
-        throw new Error(`Xsolla order HTTP ${res.status}`)
-    }
-    return res.json()
-}
-```
+**Inventory** — `GET /{projectId}/user/inventory/items`
 
-### Catalog
+**Consume** — `POST /{projectId}/user/inventory/item/consume` with `{ sku, quantity }`
 
-```javascript
-async function getCatalog(sdk, projectId) {
-    const token = await getXsollaToken(sdk)
-    const res = await fetch(
-        `${XSOLLA_SDK_URL}/${projectId}/items?limit=50`,
-        { headers: { Authorization: `Bearer ${token}` } },
-    )
-    if (!res.ok) {
-        throw new Error(`Xsolla catalog HTTP ${res.status}`)
-    }
-    const data = await res.json()
-    return (data.items || []).map((it) => ({
-        id: it.sku,
-        name: it.name,
-        description: it.description,
-        price: it.price?.amount ?? null,
-        priceCurrencyCode: it.price?.currency ?? null,
-    }))
-}
-```
-
-### Purchase
-
-```javascript
-async function purchase(sdk, projectId, sku, { isSandbox = false } = {}) {
-    await ensurePaystationLoaded()
-    const userToken = await getXsollaToken(sdk)
-
-    // Create the order on Xsolla
-    const orderResponse = await fetch(
-        `${XSOLLA_SDK_URL}/${projectId}/payment/item/${sku}`,
-        {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${userToken}`,
-                'Content-Type': 'application/json',
-            },
-        },
-    )
-
-    if (!orderResponse.ok) {
-        throw new Error(`Xsolla create order HTTP ${orderResponse.status}`)
-    }
-
-    const orderData = await orderResponse.json()
-    const paymentToken = orderData.token
-    const orderId = orderData.order_id
-
-    const paystation = window.XPayStationWidget
-    if (!paystation) {
-        throw new Error('Xsolla Pay Station widget not loaded')
-    }
-
-    paystation.init({
-        access_token: paymentToken,
-        sandbox: isSandbox,
-        childWindow: { target: '_blank' },
-    })
-
-    return new Promise((resolve, reject) => {
-        let resolved = false
-
-        const cleanup = () => {
-            document.removeEventListener('visibilitychange', handleVisibilityChange)
-        }
-
-        const handleVisibilityChange = () => {
-            // If the player closes the Pay Station window manually
-            if (document.visibilityState === 'visible' && !resolved) {
-                setTimeout(() => {
-                    if (!resolved) {
-                        resolved = true
-                        cleanup()
-                        reject(new Error('Purchase canceled/closed'))
-                    }
-                }, 1500)
-            }
-        }
-
-        paystation.on(paystation.eventTypes.STATUS, (_evt, data) => {
-            const info = (data && data.paymentInfo) || {}
-            if (info.status && /done|charged|success/i.test(String(info.status))) {
-                getXsollaOrder(projectId, orderId, userToken)
-                    .then((order) => {
-                        // Forward the order to the CrazyGames analytics pipeline
-                        sdk.analytics.trackOrder('xsolla', order)
-
-                        if (!resolved) {
-                            resolved = true
-                            cleanup()
-                            resolve({ orderId, sku, ...order })
-                        }
-                    })
-                    .catch((err) => {
-                        if (!resolved) {
-                            resolved = true
-                            cleanup()
-                            reject(err)
-                        }
-                    })
-            }
-        })
-
-        paystation.on('close', () => {
-            if (!resolved) {
-                resolved = true
-                cleanup()
-                reject(new Error('Purchase canceled/closed'))
-            }
-        })
-
-        paystation.open()
-        document.addEventListener('visibilitychange', handleVisibilityChange)
-    })
-}
-```
-
-### Owned items and consumption
-
-```javascript
-async function getPurchases(sdk, projectId) {
-    const token = await getXsollaToken(sdk)
-    const res = await fetch(
-        `${XSOLLA_SDK_URL}/${projectId}/user/inventory/items`,
-        { headers: { Authorization: `Bearer ${token}` } },
-    )
-    if (!res.ok) {
-        throw new Error(`Xsolla inventory HTTP ${res.status}`)
-    }
-    const data = await res.json()
-    return data.items || []
-}
-
-async function consumePurchase(sdk, projectId, sku, quantity = 1) {
-    const token = await getXsollaToken(sdk)
-    const res = await fetch(
-        `${XSOLLA_SDK_URL}/${projectId}/user/inventory/item/consume`,
-        {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ sku, quantity }),
-        },
-    )
-    if (!res.ok) {
-        throw new Error(`Xsolla consume HTTP ${res.status}`)
-    }
-}
-```
-
-## Lifecycle / gameplay events
-
-CrazyGames REQUIRES the host game to call gameplay and loading hooks at the right moments — they drive ad pacing, in-game UI dimming and analytics. Call them precisely.
-
-```javascript
-function onInGameLoadingStarted(sdk) {
-    // The game has started loading a level / asset bundle
-    sdk.game.loadingStart()
-}
-
-function onInGameLoadingStopped(sdk) {
-    // The loading screen is done, user can interact
-    sdk.game.loadingStop()
-}
-
-function onGameplayStarted(sdk) {
-    // Active gameplay began (level start, level resumed)
-    sdk.game.gameplayStart()
-}
-
-function onGameplayStopped(sdk) {
-    // Gameplay paused, level finished or failed
-    sdk.game.gameplayStop()
-}
-
-function onPlayerGotAchievement(sdk) {
-    // Notify CrazyGames of a "happy" moment for replay clip selection
-    sdk.game.happytime()
-}
-```
-
-Suggested mapping from generic game lifecycle events:
-
-- `level_started`, `level_resumed`, `gameplay_started` → `sdk.game.gameplayStart()`
-- `level_paused`, `level_completed`, `level_failed`, `gameplay_stopped` → `sdk.game.gameplayStop()`
-- `in_game_loading_started` → `sdk.game.loadingStart()`
-- `in_game_loading_stopped` → `sdk.game.loadingStop()`
-- `player_got_achievement` → `sdk.game.happytime()`
-
-There are no separate `audio` / `pause` / `visibility` callbacks on the CrazyGames SDK — drive your audio and pause state from the ad callbacks (`adStarted` / `adFinished`) and the standard `document.visibilitychange` event.
+All fetch calls must include `Authorization: Bearer <xsollaToken>`. Throw on non-OK responses. Use `isSandbox: true` during development.
